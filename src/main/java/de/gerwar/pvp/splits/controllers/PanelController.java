@@ -1,0 +1,645 @@
+package de.gerwar.pvp.splits.controllers;
+
+import de.gerwar.pvp.splits.KnownPlayers;
+import de.gerwar.pvp.splits.SplitsPanel;
+import de.gerwar.pvp.splits.SplitService;
+import de.gerwar.pvp.splits.SplitsConfigKeys;
+import de.gerwar.pvp.splits.models.Metrics;
+import de.gerwar.pvp.splits.models.PendingValue;
+import de.gerwar.pvp.splits.models.Session;
+import de.gerwar.pvp.splits.models.WaitlistTable;
+import de.gerwar.pvp.splits.utils.Formats;
+import de.gerwar.pvp.splits.utils.MarkdownFormatter;
+import static de.gerwar.pvp.splits.utils.Utils.toast;
+import de.gerwar.pvp.splits.views.SplitsTabPanel;
+import java.awt.Toolkit;
+import java.awt.datatransfer.StringSelection;
+import java.util.List;
+import javax.swing.DefaultCellEditor;
+import javax.swing.DefaultComboBoxModel;
+import javax.swing.DefaultListModel;
+import javax.swing.JComboBox;
+import javax.swing.JOptionPane;
+import lombok.Setter;
+import lombok.extern.slf4j.Slf4j;
+
+//Testing push again
+
+/**
+ * MVC Controller: non-UI logic + event handling. The View calls into this via PanelActions.
+ * Keeps string/markdown/transfer computations here and pushes UI refreshes through the View.
+ */
+@Slf4j
+public class PanelController implements PanelActions
+{
+	private final SplitService sessionManager;
+	private final SplitsConfigKeys config;
+	private final KnownPlayers playerManager;
+	private final SplitsPanel managerPanel;
+	@Setter
+	private SplitsTabPanel view;
+	private Formats.OsrsAmountFormatter formats;
+
+	public PanelController(SplitService sessionManager, SplitsConfigKeys config, KnownPlayers playerManager, SplitsPanel managerPanel)
+	{
+		this.sessionManager = sessionManager;
+		this.playerManager = playerManager;
+		this.config = config;
+		this.managerPanel = managerPanel;
+		this.formats = new Formats.OsrsAmountFormatter();
+	}
+
+	@Override
+	public void startSession()
+	{
+		if (sessionManager.isHistoryLoaded())
+		{
+			toast(view, "Unload history first.");
+			return;
+		}
+		if (sessionManager.hasActiveSession())
+		{
+			toast(view, "Active session exists.");
+			return;
+		}
+		sessionManager.startSession().ifPresent(s -> toast(view, "Session started."));
+		managerPanel.refreshAllView();
+		refreshAllView();
+	}
+
+	@Override
+	public void stopSession()
+	{
+		if (sessionManager.isHistoryLoaded())
+		{
+			toast(view, "Cannot stop while history loaded.");
+			return;
+		}
+		if (sessionManager.stopSession(view))
+		{
+			managerPanel.refreshAllView();
+		}
+		else
+		{
+			toast(view, "Failed to stop session.");
+		}
+		refreshAllView();
+	}
+
+	@Override
+	public void addPlayerToSession(String player)
+	{
+		if (player == null)
+		{
+			toast(view, "Select a player in dropdown.");
+			return;
+		}
+		if (sessionManager.addPlayerToActive(player))
+		{
+			managerPanel.refreshAllView();
+		}
+		else
+		{
+			toast(view, "Failed to add player, player might already be in session.");
+		}
+		refreshAllView();
+	}
+
+	@Override
+	public void addKnownPlayer(String name)
+	{
+		String clean = name == null ? "" : name.trim();
+		if (clean.isEmpty())
+		{
+			toast(view, "Enter a name.");
+			return;
+		}
+		if (!playerManager.addKnownPlayer(clean))
+		{
+			toast(view, "Player already in list exists.");
+			return;
+		}
+		playerManager.saveToConfig();
+		managerPanel.refreshAllView();
+		view.getKnownPlayersDropdown().setSelectedItem(clean);
+		view.getNewPlayerField().setText("");
+		view.getNewPlayerField().requestFocusInWindow();
+		refreshAllView();
+	}
+
+	@Override
+	public void removeKnownPlayer(String name)
+	{
+		if (name == null)
+		{
+			toast(view, "Select a Player to remove.");
+			return;
+		}
+		int res = JOptionPane.showConfirmDialog(view,
+			"Remove '" + name + "'? This will also unlink any alt relationships.",
+			"Confirm removal",
+			JOptionPane.YES_NO_OPTION,
+			JOptionPane.WARNING_MESSAGE);
+		if (res != JOptionPane.YES_OPTION)
+		{
+			return;
+		}
+
+		if (!playerManager.removeKnownPlayer(name))
+		{
+			toast(view, "Not found.");
+			return;
+		}
+		playerManager.saveToConfig();
+		managerPanel.refreshAllView();
+		refreshAllView();
+	}
+
+	@Override
+	public void addKill(String player, long amount)
+	{
+		if (player == null)
+		{
+			toast(view, "Select a player.");
+			return;
+		}
+		if (sessionManager.addKill(player, amount))
+		{
+			view.getKillAmountField().setText("");
+			managerPanel.refreshAllView();
+		}
+		else
+		{
+			toast(view, "Failed to add kill (is player in session?).");
+		}
+		refreshAllView();
+	}
+
+	@Override
+	public void addKillFromInputs()
+	{
+		String player = (String) view.getCurrentSessionPlayerDropdown().getSelectedItem();
+
+		Object rawValue = view.getKillAmountField().getValue();
+		if (rawValue == null)
+		{
+			toast(view, "Please enter a valid amount.");
+			return;
+		}
+
+		String val = rawValue.toString();
+		long amt;
+		try
+		{
+			log.debug("Adding kill for1  {} with amount {}", player, val);
+			//amt = Formats.OsrsAmountFormatter.stringAmountToLongAmount(val,config);
+			//log.debug("Adding kill for2  {} with amount {}", player, amt);
+			amt = Long.parseLong(val);
+			log.debug("Adding kill for3  {} with amount {}", player, amt);
+			// amt = Long.parseLong(val); TODO?????
+			addKill(player, amt);
+		}
+		catch (Exception ex)
+		{
+			toast(view, "Invalid amount.");
+		}
+	}
+
+	@Override
+	public void addAltToMain(String main, String alt)
+	{
+		if (sessionManager.hasActiveSession())
+		{
+			toast(view, "Cannot add/remove alts while session is active. Stop session first.");
+			return;
+		}
+		if (main == null || alt == null)
+		{
+			toast(view, "Select a player and an alt to add.");
+			return;
+		}
+		if (!playerManager.canLinkAltToMain(alt, main))
+		{
+			toast(view, "Cannot link: either main is an alt, alt already linked, or alt is a main.");
+			return;
+		}
+		if (playerManager.trySetAltMain(alt, main))
+		{
+			toast(view, String.format("Linked %s → %s", alt, main));
+			managerPanel.refreshAllView();
+			refreshAllView();
+		}
+		else
+		{
+			toast(view, "Failed to link alt.");
+		}
+	}
+
+	@Override
+	public void removeSelectedAlt(String selectedMain, String selectedEntry)
+	{
+		if (sessionManager.hasActiveSession())
+		{
+			toast(view, "Cannot add/remove alts while session is active. Stop session first.");
+			return;
+		}
+		if (selectedMain == null || selectedMain.isBlank())
+		{
+			toast(view, "Select a player in Known list.");
+			return;
+		}
+		if (selectedEntry == null || selectedEntry.isBlank())
+		{
+			toast(view, "Select an alt in the list to remove.");
+			return;
+		}
+
+		String alt = playerManager.parseAltFromEntry(selectedEntry);
+		String main = playerManager.getMainName(alt);
+
+		if (!playerManager.isAlt(alt))
+		{
+			toast(view, alt + " is not linked as an alt.");
+			return;
+		}
+
+		if (main == null || !main.equalsIgnoreCase(selectedMain))
+		{
+			toast(view, String.format("%s is linked to %s, not %s.", alt, main, selectedMain));
+			return;
+		}
+
+		int res = JOptionPane.showConfirmDialog(view,
+			"Unlink '" + alt + "' from '" + main + "'?",
+			"Confirm unlink",
+			JOptionPane.YES_NO_OPTION,
+			JOptionPane.WARNING_MESSAGE);
+
+		if (res != JOptionPane.YES_OPTION)
+		{
+			return;
+		}
+
+		if (playerManager.unlinkAlt(alt))
+		{
+			toast(view, "Unlinked alt.");
+			managerPanel.refreshAllView();
+			playerManager.saveToConfig();
+			refreshAllView();
+		}
+		else
+		{
+			toast(view, "Failed to unlink alt.");
+		}
+	}
+
+	@Override
+	public void applySelectedPendingValue(int idx)
+	{
+		if (idx < 0)
+		{
+			toast(view, "Select a detected value first.");
+			return;
+		}
+		if (!sessionManager.hasActiveSession())
+		{
+			toast(view, "Start a session first.");
+			return;
+		}
+		WaitlistTable m = view.getWaitlistTableModel();
+		PendingValue pv = m.getRow(idx);
+		if (pv == null)
+		{
+			return;
+		}
+		String target = pv.getSuggestedPlayer();
+		if (target == null || target.isBlank())
+		{
+			toast(view, "Choose a Suggested Player in the table first.");
+			return;
+		}
+		if (sessionManager.applyPendingValueToPlayer(pv.getId(), target))
+		{
+			managerPanel.refreshAllView();
+		}
+		else
+		{
+			toast(view, "Failed to add value. Is the player in the session?");
+		}
+		refreshAllView();
+	}
+
+	@Override
+	public void deleteSelectedPendingValue(int idx)
+	{
+		if (idx < 0)
+		{
+			toast(view, "Select a detected value first.");
+			return;
+		}
+		WaitlistTable m = view.getWaitlistTableModel();
+		PendingValue pv = m.getRow(idx);
+		if (pv == null)
+		{
+			return;
+		}
+		if (sessionManager.removePendingValueById(pv.getId()))
+		{
+			managerPanel.refreshAllView();
+		}
+		refreshAllView();
+	}
+
+	@Override
+	public void onKnownPlayerSelectionChanged(String selected)
+	{
+		refreshAlts();
+	}
+
+	@Override
+	public void refreshAllView()
+	{
+		refreshKnownPlayers();
+		recomputeMetrics();
+		refreshSessionData();
+		refreshWaitlist();
+		refreshButtonStates();
+	}
+
+	@Override
+	public void recomputeMetrics()
+	{
+		Session current = sessionManager.getCurrentSession().orElse(null);
+		if (current != null)
+		{
+			((Metrics) view.getMetricsTable().getModel()).setData(sessionManager.computeMetricsFor(current, true));
+			view.refreshMetrics();
+			view.getRecentSplitsModel().setFromKills(sessionManager.getAllKills());
+		}
+		else
+		{
+			view.getRecentSplitsModel().clear();
+		}
+	}
+
+	@Override
+	public void recomputeMetricsForSession(String sessionId)
+	{
+		if (sessionId == null)
+		{
+			recomputeMetrics();
+			return;
+		}
+		// Find that session (either current or one from history)
+		Session target = sessionManager.getAllSessionsNewestFirst().stream()
+			.filter(s -> sessionId.equals(s.getId()))
+			.findFirst().orElse(null);
+		if (target != null)
+		{
+			((Metrics) view.getMetricsTable().getModel()).setData(
+				sessionManager.computeMetricsFor(target, true)
+			);
+			view.refreshMetrics();
+		}
+		// Keep the recent splits list up-to-date (it shows all kills)
+		view.getRecentSplitsModel().setFromKills(sessionManager.getAllKills());
+	}
+
+	@Override
+	public void altPlayerManageAddPlayer(String player)
+	{
+		//TODO remove
+	}
+
+	@Override
+	public void altPlayerManageRemovePlayer(String player)
+	{
+		//TODO remove
+	}
+
+	@Override
+	public void copyMetricsJson()
+	{
+		String payload = MarkdownFormatter.buildMetricsJson(sessionManager);
+		StringSelection selection = new StringSelection(payload);
+		Toolkit.getDefaultToolkit().getSystemClipboard().setContents(selection, selection);
+	}
+
+	@Override
+	public void copyMetricsMarkdown()
+	{
+		String payload = MarkdownFormatter.buildMetricsMarkdown(
+			sessionManager.computeMetricsFor(
+				sessionManager.getCurrentSession().orElse(null), true), config);
+		StringSelection selection = new StringSelection(payload);
+		Toolkit.getDefaultToolkit().getSystemClipboard().setContents(selection, selection);
+	}
+
+	// Tutorial control implementations to keep view passive
+	@Override
+	public void tourStart()
+	{
+		view.startTour();
+	}
+
+	@Override
+	public void tourPrev()
+	{
+		view.prevTourStep();
+	}
+
+	@Override
+	public void tourNext()
+	{
+		view.nextTourStep();
+	}
+
+	@Override
+	public void tourEnd()
+	{
+		try
+		{
+			config.enableTour(false);
+		}
+		catch (Throwable ignored)
+		{
+		}
+		view.endTour();
+	}
+
+	/**
+	 * Refreshes the list of known players and updates corresponding UI components.
+	 * <p>
+	 * This method retrieves the list of known players from the session manager and updates
+	 * the dropdown menu for known players in the user interface, as well as the label showing
+	 * the count of known players. It ensures synchronization between the backend data and
+	 * the visual presentation of known players.
+	 */
+	private void refreshKnownPlayers()
+	{
+		String[] players = sessionManager.getKnownPlayers().toArray(new String[0]);
+		view.getKnownPlayersDropdown().setModel(new DefaultComboBoxModel<>(players));
+		view.getKnownListLabel().setText("Known (" + players.length + "):");
+
+		refreshAlts();
+	}
+
+	/**
+	 * Refreshes and updates user interface components related to the current session data.
+	 */
+	private void refreshSessionData()
+	{
+		Session currentSession = sessionManager.getCurrentSession().orElse(null);
+
+		if (currentSession != null && currentSession.isActive())
+		{
+			String[] sessionPlayers = currentSession.getPlayers().toArray(new String[0]);
+			String[] notPlayers = sessionManager.getNonActivePlayers().toArray(new String[0]);
+
+			view.getCurrentSessionPlayerDropdown().setEnabled(true);
+			view.getCurrentSessionPlayerDropdown().setModel(new DefaultComboBoxModel<>(sessionPlayers));
+			view.getNotInCurrentSessionPlayerDropdown().setModel(new DefaultComboBoxModel<>(notPlayers));
+		}
+		else
+		{
+			view.getCurrentSessionPlayerDropdown().setModel(new DefaultComboBoxModel<>(new String[0]));
+			view.getCurrentSessionPlayerDropdown().setEnabled(false);
+		}
+
+		view.getHistoryLabel().setText("History: " + (sessionManager.isHistoryLoaded() ? "ON" : "OFF"));
+
+		Session current = sessionManager.getCurrentSession().orElse(null);
+		if (current != null)
+		{
+			((Metrics) view.getMetricsTable().getModel())
+				.setData(sessionManager.computeMetricsFor(current, true));
+			view.getRecentSplitsModel().setFromKills(sessionManager.getAllKills());
+		}
+		else
+		{
+			view.getRecentSplitsModel().clear();
+		}
+	}
+
+	/**
+	 * Refreshes the data and UI components related to the waitlist table.
+	 * <p>
+	 * This method fetches the latest pending values from the session manager and updates
+	 * the waitlist table model with this data. It also configures the cell editor for the
+	 * third column of the waitlist table, populating it with a dropdown of known main players
+	 * retrieved from the session manager.
+	 * <p>
+	 * Ensures that the waitlist table reflects the most up-to-date state of the application.
+	 */
+	private void refreshWaitlist()
+	{
+		view.getWaitlistTableModel().setData(sessionManager.getPendingValues());
+		view.getWaitlistTable()
+			.getColumnModel()
+			.getColumn(2)
+			.setCellEditor(new DefaultCellEditor(new JComboBox<>(
+				playerManager.getKnownMains().toArray(new String[0]
+				)
+			)));
+	}
+
+	/**
+	 * Updates the enabled or disabled state of various buttons and fields in the user interface.
+	 * The button states are set based on the current session status, player selections, and
+	 * whether the session is in a read-only mode.
+	 */
+	private void refreshButtonStates()
+	{
+		boolean readOnly = sessionManager.isHistoryLoaded();
+		boolean hasActiveSession = sessionManager.hasActiveSession();
+
+		view.getBtnStart().setEnabled(!readOnly && !hasActiveSession);
+		view.getBtnStop().setEnabled(!readOnly && hasActiveSession);
+		view.getBtnAddToSession().setEnabled(!readOnly && hasActiveSession);
+		view.getNotInCurrentSessionPlayerDropdown().setEnabled(!readOnly && hasActiveSession);
+		view.getBtnRemoveFromSession().setEnabled(!readOnly && hasActiveSession);
+
+		boolean canAddKill = !readOnly && hasActiveSession;
+		boolean hasSessionPlayers = view.getCurrentSessionPlayerDropdown().getItemCount() > 0;
+
+		view.getBtnAddKill().setEnabled(canAddKill && hasSessionPlayers);
+		view.getKillAmountField().setEnabled(canAddKill && hasSessionPlayers);
+
+		int waitlistRows = view.getWaitlistTableModel().getRowCount();
+
+		view.getBtnWaitlistAdd().setEnabled(!readOnly && hasActiveSession && waitlistRows > 0);
+		view.getBtnWaitlistDelete().setEnabled(waitlistRows > 0);
+	}
+
+	/**
+	 * Refreshes the dropdown lists and UI components related to alternate accounts.
+	 * This method ensures that the UI reflects the currently selected main player
+	 * and dynamically updates the list of eligible alternate accounts that can be linked to the selected player.
+	 */
+	private void refreshAlts()
+	{
+		String[] players = sessionManager.getKnownPlayers().toArray(new String[0]);
+
+		String selectedMain = (String) view.getKnownPlayersDropdown().getSelectedItem();
+		if (selectedMain == null && players.length > 0)
+		{
+			selectedMain = players[0];
+			view.getKnownPlayersDropdown().setSelectedIndex(0);
+		}
+
+		refreshAltList(selectedMain);
+
+		List<String> eligiblePlayers = new java.util.ArrayList<>();
+
+		if (selectedMain != null)
+		{
+			for (String p : sessionManager.getKnownPlayers())
+			{
+				if (playerManager.canLinkAltToMain(p, selectedMain))
+				{
+					eligiblePlayers.add(p);
+				}
+			}
+		}
+
+		view.getAddAltDropdown().setModel(new DefaultComboBoxModel<>(eligiblePlayers.toArray(new String[0])));
+	}
+
+	/**
+	 * Refreshes the list of alternate accounts associated with the given main player.
+	 * Updates the alt label and list in the view with relevant information about the player's alt accounts.
+	 * If the player is identified as an alt, displays the corresponding main account name.
+	 *
+	 * @param mainPlayer the name of the main player whose alternate accounts are to be refreshed;
+	 *                   if null, the method exits without performing any action.
+	 */
+	public void refreshAltList(String mainPlayer)
+	{
+		if (mainPlayer == null)
+		{
+			return;
+		}
+
+		String altsText = !mainPlayer.isBlank()
+			? (mainPlayer + " known alts:")
+			: "Known alts:";
+		view.getAltsLabel().setText(altsText);
+
+		DefaultListModel<String> altsModel = (DefaultListModel<String>) view.getAltsList().getModel();
+		altsModel.clear();
+
+		if (playerManager.isAlt(mainPlayer))
+		{
+			String mainName = playerManager.getMainName(mainPlayer);
+			if (mainName != null && !mainName.equalsIgnoreCase(mainPlayer))
+			{
+				altsModel.addElement(mainPlayer + " is an alt of " + mainName);
+			}
+		}
+
+		for (String alt : playerManager.getAltsOf(mainPlayer))
+		{
+			altsModel.addElement(alt);
+		}
+	}
+}

@@ -1,0 +1,579 @@
+package de.gerwar.pvp.splits;
+
+import com.google.inject.Provides;
+import de.gerwar.pvp.splits.models.PendingValue;
+import de.gerwar.pvp.splits.models.Session;
+import de.gerwar.pvp.splits.utils.ChatStatusOverlay;
+import de.gerwar.pvp.splits.utils.Formats;
+import de.gerwar.pvp.splits.views.SplitsTabPanel;
+import java.awt.image.BufferedImage;
+import java.text.ParseException;
+import java.util.Arrays;
+import javax.inject.Inject;
+import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
+import net.runelite.api.ChatMessageType;
+import net.runelite.api.Client;
+import net.runelite.api.MenuAction;
+import net.runelite.api.Player;
+import net.runelite.api.clan.ClanChannel;
+import net.runelite.api.clan.ClanChannelMember;
+import net.runelite.api.events.ChatMessage;
+import net.runelite.api.events.ClanChannelChanged;
+import net.runelite.api.events.FriendsChatChanged;
+import net.runelite.api.events.MenuEntryAdded;
+import net.runelite.api.events.WorldChanged;
+import net.runelite.api.gameval.InterfaceID;
+import net.runelite.api.widgets.WidgetUtil;
+import net.runelite.client.config.ConfigManager;
+import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.events.ConfigChanged;
+import net.runelite.client.plugins.Plugin;
+import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.ui.ClientToolbar;
+import net.runelite.client.ui.NavigationButton;
+import net.runelite.client.ui.overlay.OverlayManager;
+import net.runelite.client.util.ImageUtil;
+import net.runelite.client.util.Text;
+
+@Slf4j
+@PluginDescriptor(
+	name = "GerWar PvP — Splits",
+	description = "Track and manage loot splits for group PvM/PvP sessions: chat detection, roster, settlements, Discord export.",
+	tags = {"splits", "loot", "pvm", "pvp", "gerwar", "clan", "group"}
+)
+/**
+ * Main RuneLite plugin entry point for GerWar PvP — Splits.
+ * Wires up UI, session management, configuration, and chat/menu event handlers.
+ */
+public class SplitManager extends Plugin
+{
+	private static final BufferedImage ICON = ImageUtil.loadImageResource(SplitManager.class, "/de/gerwar/pvp/splits/icons/icon.png");
+	@Getter
+	private static SplitsPanel panel;
+	@Inject
+	private Client client;
+	@Inject
+	private ClientToolbar clientToolbar;
+	@Getter
+	@Inject
+	private SplitsConfigKeys config;
+	@Inject
+	private OverlayManager overlayManager;
+	private ChatStatusOverlay chatOverlay;
+	private NavigationButton navButton;
+	@Inject
+	private SplitsPanel panelManager;
+	@Inject
+	private SplitService sessionManager;
+	@Inject
+	private KnownPlayers playerManager;
+	private SplitsTabPanel view;
+
+	@Override
+	/**
+	 * Initialize plugin state and register the sidebar panel/navigation.
+	 */
+	protected void startUp()
+	{
+		//Force diable pop out for now
+		config.enablePopout(false);
+		config.directPayments(false);
+
+		Formats.setConfig(config);
+		playerManager.init();
+		sessionManager.init();
+		panelManager.init();
+
+		// TODO create an icon
+
+
+		chatOverlay = new ChatStatusOverlay();
+		overlayManager.add(chatOverlay);
+		view = panelManager.getView();
+		// NavigationButton is registered by the unified GerWarPvpPlugin; the panel
+		// is embedded as a tab. We intentionally skip adding a separate nav button here.
+	}
+
+	@Override
+	/**
+	 * Persist state and remove UI elements when the plugin shuts down.
+	 */
+	protected void shutDown()
+	{
+		if (navButton != null)
+		{
+			clientToolbar.removeNavigation(navButton);
+			navButton = null;
+		}
+		if (sessionManager != null)
+		{
+			sessionManager.saveToConfig();
+		}
+
+		if (chatOverlay != null)
+		{
+			overlayManager.remove(chatOverlay);
+			chatOverlay = null;
+		}
+	}
+
+	/**
+	 * Provide injectable configuration instance.
+	 *
+	 * @param configManager RuneLite config manager
+	 * @return plugin config
+	 */
+	@Provides
+	SplitsConfigKeys provideConfig(ConfigManager configManager)
+	{
+		return configManager.getConfig(SplitsConfigKeys.class);
+	}
+
+	@Subscribe
+	public void onClanChannelChanged(ClanChannelChanged e)
+	{
+		updateChatWarningStatus();
+	}
+
+	@Subscribe
+	public void onFriendsChatChanged(FriendsChatChanged e)
+	{
+		updateChatWarningStatus();
+	}
+
+	@Subscribe
+	public void onWorldChanged(WorldChanged e)
+	{
+		updateChatWarningStatus();
+	}
+
+	/**
+	 * React to plugin configuration changes that require a panel refresh/restart.
+	 *
+	 * @param e config change event
+	 */
+	@Subscribe
+	public void onConfigChanged(ConfigChanged e)
+	{
+		if (!"gerwarpvp".equals(e.getGroup()))
+		{
+			return;
+		}
+
+		switch (e.getKey())
+		{
+			case "directPayments":
+				log.info("Direct payments changed, refreshing panel");
+				restartViewFix();
+				break;
+			case "WarnNotInFC":
+				updateChatWarningStatus();
+				break;
+			case "enablePopout":
+			case "enableTour":
+				restartViewFix();
+				break;
+		}
+	}
+
+	private void restartViewFix()
+	{
+		panelManager.restart();
+		view = panelManager.getView();
+		// Nav button is managed centrally; nothing to do here.
+	}
+
+	/**
+	 * Parse chat messages to detect values and enqueue PendingValue suggestions.
+	 *
+	 * @param event chat message event
+	 * @throws ParseException when number parsing fails
+	 */
+	@Subscribe
+	public void onChatMessage(ChatMessage event) throws ParseException
+	{
+
+		// Disabled for now, this should be covered by other checks
+		if (CheckChatJoinLeave(event))
+		{
+			return;
+		}
+
+		if (!config.enableChatDetection())
+		{
+			return;
+		}
+
+		Formats.OsrsAmountFormatter f = new Formats.OsrsAmountFormatter();
+		ChatMessageType type = event.getType();
+		String tname = type.name();
+
+		boolean isClan = tname.contains("CLAN");
+		boolean isFriends = tname.contains("FRIEND");
+
+		if (isClan && !config.detectInClanChat())
+		{
+			return;
+		}
+		if (isFriends && !config.detectInFriendsChat())
+		{
+			return;
+		}
+		if (!isClan && !isFriends)
+		{
+			return;
+		}
+
+		String msg = event.getMessage();
+
+		// Try parse PvM drop
+		if (config.detectPvmValues())
+		{
+			java.util.regex.Matcher m = java.util.regex.Pattern.compile("^(.+?) received a drop: .*?\\((\\d[\\d,]*) coins\\)").matcher(msg);
+			if (m.find())
+			{
+				String player = m.group(1);
+				Long value = (Long) f.stringToValue(m.group(2) + " coins");
+				queuePending(PendingValue.Type.PVM, isClan ? "Clan" : "Friends", msg, value, player);
+				return;
+			}
+		}
+
+		// Try parse PvP loot
+		if (config.detectPvpValues())
+		{
+			java.util.regex.Matcher m = java.util.regex.Pattern.compile("^(.+?) has defeated (.+?) and received \\((\\d[\\d,]*) coins\\) worth of loot!").matcher(msg);
+			if (m.find())
+			{
+				String player = m.group(1);
+				Long value = (Long) f.stringToValue(m.group(3) + " coins");
+				queuePending(PendingValue.Type.PVP, isClan ? "Clan" : "Friends", msg, value, player);
+				return;
+			}
+		}
+
+		// Try parse player !add value
+		//TODO fix negative numbers
+		if (config.detectPlayerValues())
+		{
+			// Pattern to match a single value with k, m, or b unit only
+			String valuePattern = "([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*([kmb])?";
+
+			// Pattern to match one or more values separated by spaces or commas
+			java.util.regex.Pattern multiValuePattern = java.util.regex.Pattern
+				.compile("(?i)!add\\s+(" + valuePattern + "(\\s*,?\\s*" + valuePattern + ")*)");
+
+			java.util.regex.Matcher multiMatcher = multiValuePattern.matcher(msg);
+
+			if (multiMatcher.find())
+			{
+				String sender = event.getName();
+				String who = sender.replaceAll("<[^>]*>", "");
+				String valuesText = multiMatcher.group(1);
+				String[] valueStrings = valuesText.split("\\s*,\\s*|\\s+");
+
+				for (String valueString : valueStrings)
+				{
+					java.util.regex.Matcher singleValueMatcher = java.util.regex.Pattern
+						.compile("(?i)(" + valuePattern + ")")
+						.matcher(valueString);
+
+					if (singleValueMatcher.find())
+					{
+						String numberTxt = singleValueMatcher.group(2);
+						String unitTxt = singleValueMatcher.group(3);
+						if (unitTxt == null)
+						{
+							unitTxt = config.defaultValueMultiplier().getValue();
+						}
+
+						// Combine the number and unit for parsing
+						String fullValueText = numberTxt + (unitTxt != null ? unitTxt : "");
+
+						try
+						{
+							Long value = (Long) f.stringToValue(fullValueText);
+							queuePending(PendingValue.Type.ADD, isClan ? "Clan" : "Friends",
+								"!add " + fullValueText, value, who);
+						}
+						catch (ParseException e)
+						{
+							// Skip invalid values
+							log.debug("Failed to parse value: " + fullValueText, e);
+						}
+					}
+				}
+			}
+		}
+	}
+
+
+	/**
+	 * Enqueue a pending value suggestion for user approval.
+	 *
+	 * @param type            source type (PvM, PvP, player add)
+	 * @param source          chat source label
+	 * @param msg             original chat message
+	 * @param value           numeric value (coins or K)
+	 * @param suggestedPlayer prefilled player name when available
+	 */
+	private void queuePending(PendingValue.Type type, String source, String msg, Long value, String suggestedPlayer)
+	{
+		if (sessionManager == null)
+		{
+			return;
+		}
+		PendingValue pv = PendingValue.of(type, source, msg, value, suggestedPlayer);
+		sessionManager.addPendingValue(pv);
+
+		panelManager.refreshAllView();
+	}
+
+	private boolean CheckChatJoinLeave(ChatMessage event)
+	{
+
+		String plain = Text.removeTags(event.getMessage()).trim();
+		String lower = plain.toLowerCase();
+
+		ChatMessageType t = event.getType();
+		boolean isSystemish = t == ChatMessageType.GAMEMESSAGE
+			|| t == ChatMessageType.CLAN_MESSAGE
+			|| t == ChatMessageType.CLAN_CHAT
+			|| t == ChatMessageType.CLAN_GUEST_CHAT
+			|| t.name().contains("CLAN");
+
+		if (!isSystemish)
+		{
+			return false;
+		}
+
+		//LEAVE/KICK Chat
+		if (java.util.regex.Pattern
+			.compile("(?i)^\\s*(?:you\\s+(?:have\\s+)?left\\s+(?:the\\s+)?(?:chat-)?channel\\.?|you\\s+(?:are|aren't|are\\s+not)\\s+currently\\s+in\\s+(?:a|the|your)\\s+(?:chat-)?channel\\.?|you\\s+have\\s+been\\s+kicked\\s+from\\s+the\\s+channel\\.?)\\s*$")
+			.matcher(plain)
+			.find())
+		{
+			updateChatWarningStatus();
+			return true;
+		}
+
+
+		//JOIN Chat
+		if (java.util.regex.Pattern
+			.compile("(?i)^\\s*now\\s+talking\\s+in\\s+(?:the\\s+)?(?:chat-)?channel\\.?\\s*$")
+			.matcher(plain)
+			.find())
+		{
+			updateChatWarningStatus();
+			return false;
+		}
+		return false;
+	}
+
+
+	/**
+	 * Recompute overlay purely from member lists (no timers, no message heuristics).
+	 */
+	public void updateChatWarningStatus()
+	{
+		if (chatOverlay == null)
+		{
+			return;
+		}
+
+		if (sessionManager.getCurrentSession().isEmpty() || !config.warnNotFC())
+		{
+			chatOverlay.setVisible(false);
+			return;
+		}
+
+		log.info("Updating chat overlay status");
+		log.info("{}", isFriendsChatOn());
+
+		if (isFriendsChatOn())
+		{
+			chatOverlay.setVisible(false);
+			chatOverlay.setChatchanOn(true);
+			return;
+		}
+
+		chatOverlay.setVisible(true);
+		chatOverlay.setChatchanOn(false);
+	}
+
+
+	/**
+	 * Track context (in game) menu openings to add an option to add/remove players from session.
+	 * This Triggers when you right click a player in the friends/clan chat.
+	 *
+	 * @param event menu entry added event
+	 */
+	@Subscribe
+	public void onMenuEntryAdded(MenuEntryAdded event)
+	{
+		int componentId = event.getActionParam1();
+		int groupId = WidgetUtil.componentToInterface(componentId);
+
+		Session currentSession = null;
+		if (sessionManager == null)
+		{
+			return;
+		}
+		else
+		{
+			currentSession = sessionManager.getCurrentSession().orElse(null);
+		}
+		if (!(groupId == InterfaceID.FRIENDS || groupId == InterfaceID.CHATCHANNEL_CURRENT
+			|| componentId == InterfaceID.ClansSidepanel.PLAYERLIST || componentId == InterfaceID.ClansGuestSidepanel.PLAYERLIST))
+		{
+			return;
+		}
+		String playername = Text.removeTags(event.getTarget());
+
+		if (currentSession == null)
+		{
+			String removeFromSession = "Add to known players";
+
+			if (playerManager.isKnownPlayer(playername))
+			{
+				return;
+			}
+			// TODO Fix bug: For some reason this event/function triggers twice, so i have to check that the entry doesn't already exist' and i feel like i should not have to check this.
+			// This might be a janky mess but idc
+			if (Arrays.stream(client.getMenu().getMenuEntries()).anyMatch(e -> e.getOption().equals(removeFromSession)))
+			{
+				return;
+			}
+
+			client.getMenu().createMenuEntry(-1)
+				.setOption(removeFromSession)
+				.setTarget(event.getTarget())
+				.setType(MenuAction.RUNELITE)
+				.onClick(e ->
+				{
+					playerManager.addKnownPlayer(playername);
+					panelManager.refreshAllView();
+				});
+			return;
+		}
+
+
+		if (sessionManager.currentSessionHasPlayer(playername))
+		{
+			String removeFromSession = "Remove from session";
+
+			// TODO Fix bug: For some reason this event/function triggers twice, so i have to check that the entry doesn't already exist' and i feel like i should not have to check this.
+			// This might be a janky mess but idc
+			if (Arrays.stream(client.getMenu().getMenuEntries()).anyMatch(e -> e.getOption().equals(removeFromSession)))
+			{
+				return;
+			}
+
+			client.getMenu().createMenuEntry(-1)
+				.setOption(removeFromSession)
+				.setTarget(event.getTarget())
+				.setType(MenuAction.RUNELITE)
+				.onClick(e ->
+				{
+					sessionManager.removePlayerFromSession(playername);
+					panelManager.refreshAllView();
+				});
+			return;
+		}
+
+		String removeFromSession = "Add to session";
+
+		// TODO Fix bug: For some reason this event/function triggers twice, so i have to check that the entry doesn't already exist' and i feel like i should not have to check this.
+		// This might be a janky mess but idc
+		if (Arrays.stream(client.getMenu().getMenuEntries()).anyMatch(e -> e.getOption().equals(removeFromSession)))
+		{
+			return;
+		}
+
+		client.getMenu().createMenuEntry(-1)
+			.setOption(removeFromSession)
+			.setTarget(event.getTarget())
+			.setType(MenuAction.RUNELITE)
+			.onClick(e ->
+			{
+				if (playerManager.isKnownPlayer(playername, true))
+				{
+					sessionManager.addPlayerToActive(playername);
+				}
+				panelManager.refreshAllView();
+			});
+	}
+
+
+	/**
+	 * Local player's cleaned display name ("" if not ready).
+	 */
+	private String myCleanName()
+	{
+		Player me = client.getLocalPlayer();
+		if (me == null)
+		{
+			return "";
+		}
+		return net.runelite.client.util.Text.toJagexName(
+			net.runelite.client.util.Text.removeTags(me.getName()));
+	}
+
+	/**
+	 * True iff the given clan channel currently contains *you*.
+	 */
+	private boolean channelHasSelf(ClanChannel ch)
+	{
+		if (ch == null || ch.getMembers() == null)
+		{
+			return false;
+		}
+		String me = myCleanName();
+		if (me.isEmpty())
+		{
+			return false;
+		}
+
+		for (ClanChannelMember m : ch.getMembers())
+		{
+			if (m == null)
+			{
+				continue;
+			}
+			String n = m.getName();
+			if (n == null)
+			{
+				continue;
+			}
+			n = net.runelite.client.util.Text.toJagexName(
+				net.runelite.client.util.Text.removeTags(n));
+			if (me.equalsIgnoreCase(n))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Joined to main / guest chat-channel (based solely on your presence).
+	 */
+	private boolean isMainClanChatOn()
+	{
+		return channelHasSelf(client.getClanChannel());
+	}
+
+	private boolean isGuestClanChatOn()
+	{
+		return channelHasSelf(client.getGuestClanChannel());
+	}
+
+	/**
+	 * Joined to Friends Chat ("Chat Channel")?
+	 */
+	private boolean isFriendsChatOn()
+	{
+		return client.getFriendsChatManager() != null;
+	}
+}
