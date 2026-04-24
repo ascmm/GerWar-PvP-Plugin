@@ -19,6 +19,7 @@ import net.runelite.api.Actor;
 import net.runelite.api.Client;
 import net.runelite.api.Hitsplat;
 import net.runelite.api.Player;
+import net.runelite.api.Varbits;
 import net.runelite.api.events.ActorDeath;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.HitsplatApplied;
@@ -39,6 +40,9 @@ public class PkTracker
 
 	@Inject
 	private PersistenceManager persistence;
+
+	@Inject
+	private InventoryValueTracker inventoryValueTracker;
 
 	private final List<KillRecord> kills = new CopyOnWriteArrayList<>();
 	private final List<DeathRecord> deaths = new CopyOnWriteArrayList<>();
@@ -89,9 +93,25 @@ public class PkTracker
 		save();
 	}
 
+	private boolean isInWilderness()
+	{
+		try
+		{
+			return client.getVarbitValue(Varbits.IN_WILDERNESS) == 1;
+		}
+		catch (Exception e)
+		{
+			return false;
+		}
+	}
+
 	@Subscribe
 	public void onHitsplatApplied(HitsplatApplied event)
 	{
+		if (!isInWilderness())
+		{
+			return;
+		}
 		Actor target = event.getActor();
 		Hitsplat hitsplat = event.getHitsplat();
 		Player local = client.getLocalPlayer();
@@ -116,6 +136,10 @@ public class PkTracker
 	@Subscribe
 	public void onActorDeath(ActorDeath event)
 	{
+		if (!isInWilderness())
+		{
+			return;
+		}
 		Actor actor = event.getActor();
 		Player local = client.getLocalPlayer();
 		if (local == null || actor == null)
@@ -131,7 +155,8 @@ public class PkTracker
 			d.setKiller(lastOpponentName != null ? lastOpponentName : "Unknown");
 			d.setAt(Instant.now());
 			d.setWorld(client.getWorld());
-			d.setLostValueEstimate(0L); // can be estimated later via price lookup
+			long riskSnapshot = inventoryValueTracker != null ? inventoryValueTracker.snapshotRiskValue() : 0L;
+			d.setLostValueEstimate(config.pkTrackDeathValue() ? riskSnapshot : 0L);
 			deaths.add(d);
 			save();
 			return;

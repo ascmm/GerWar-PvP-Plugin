@@ -3,6 +3,7 @@ package de.gerwar.pvp;
 import com.google.inject.Provides;
 import de.gerwar.pvp.fights.FightTracker;
 import de.gerwar.pvp.fights.views.FightsTabPanel;
+import de.gerwar.pvp.pk.InventoryValueTracker;
 import de.gerwar.pvp.pk.LootKeyListener;
 import de.gerwar.pvp.pk.PkTracker;
 import de.gerwar.pvp.pk.views.GpBalancePanel;
@@ -13,7 +14,6 @@ import de.gerwar.pvp.ui.GerWarPvpPanel;
 import java.awt.image.BufferedImage;
 import javax.inject.Inject;
 import javax.swing.JPanel;
-import javax.swing.SwingUtilities;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.EventBus;
@@ -46,6 +46,9 @@ public class GerWarPvpPlugin extends Plugin
 
 	@Inject
 	private LootKeyListener lootKeyListener;
+
+	@Inject
+	private InventoryValueTracker inventoryValueTracker;
 
 	@Inject
 	private PkTabPanel pkTabPanel;
@@ -87,6 +90,7 @@ public class GerWarPvpPlugin extends Plugin
 		pkTracker.startUp();
 		eventBus.register(pkTracker);
 		eventBus.register(lootKeyListener);
+		eventBus.register(inventoryValueTracker);
 	}
 
 	private void scheduleSiblingAttachRetries()
@@ -168,6 +172,7 @@ public class GerWarPvpPlugin extends Plugin
 	@Override
 	protected void shutDown()
 	{
+		eventBus.unregister(inventoryValueTracker);
 		eventBus.unregister(lootKeyListener);
 		eventBus.unregister(pkTracker);
 		pkTracker.shutDown();
