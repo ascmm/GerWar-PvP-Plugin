@@ -245,17 +245,12 @@ public class TotalStatsPanel extends JPanel
 		// FIRST LINE
 		// basic label to display a title.
 		JLabel titleLabel = new JLabel();
-		titleLabel.setText("GerWar PvP — Fights v" + FightTracker.PLUGIN_VERSION);
+		titleLabel.setText("Fights");
 		titleLabel.setHorizontalAlignment(SwingConstants.CENTER);
 		titleLabel.setForeground(Color.WHITE);
 		add(titleLabel);
 
-		// if settings haven't been configured, add a red label to display that they should be.
-		if (!CONFIG.settingsConfigured())
-		{
-			initializeSettingsWarningLabel();
-			add(settingsWarningLabel);
-		}
+		// Settings warning removed — settings are available via RuneLite's config gear or inline tab controls.
 
 		// SECOND LINE
 		// panel to show total kills/deaths

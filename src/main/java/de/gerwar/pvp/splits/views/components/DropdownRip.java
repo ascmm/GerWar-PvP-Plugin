@@ -98,6 +98,10 @@ public class DropdownRip extends JPanel
 			super(new BorderLayout());
 
 			BufferedImage sectionRetractIcon = ImageUtil.loadImageResource(Header.class, "/util/arrow_right.png");
+			if (sectionRetractIcon == null)
+			{
+				sectionRetractIcon = new BufferedImage(8, 8, BufferedImage.TYPE_INT_ARGB);
+			}
 			sectionRetractIcon = ImageUtil.luminanceOffset(sectionRetractIcon, -121);
 			SECTION_EXPAND_ICON = new ImageIcon(sectionRetractIcon);
 			final BufferedImage sectionExpandIcon = ImageUtil.rotateImage(sectionRetractIcon, Math.PI / 2);

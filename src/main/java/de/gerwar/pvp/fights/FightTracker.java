@@ -411,8 +411,6 @@ public class FightTracker extends Plugin
 			return;
 		}
 
-		sendUpdateChatMessage();
-
 		hiscoreEndpoint = HiscoreEndpoint.fromWorldTypes(client.getWorldType()); // Update endpoint on login/world change
 
 		// hide or show panel depending if config is restricted to LMS and if player is at LMS

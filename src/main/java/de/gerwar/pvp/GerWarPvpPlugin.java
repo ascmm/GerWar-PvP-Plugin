@@ -5,6 +5,7 @@ import de.gerwar.pvp.fights.FightTracker;
 import de.gerwar.pvp.fights.views.FightsTabPanel;
 import de.gerwar.pvp.pk.LootKeyListener;
 import de.gerwar.pvp.pk.PkTracker;
+import de.gerwar.pvp.pk.views.GpBalancePanel;
 import de.gerwar.pvp.pk.views.PkTabPanel;
 import de.gerwar.pvp.splits.SplitManager;
 import de.gerwar.pvp.splits.views.SplitsTabPanel;
@@ -49,6 +50,9 @@ public class GerWarPvpPlugin extends Plugin
 	@Inject
 	private PkTabPanel pkTabPanel;
 
+	@Inject
+	private GpBalancePanel gpBalancePanel;
+
 	private GerWarPvpPanel panel;
 	private NavigationButton navButton;
 
@@ -63,10 +67,11 @@ public class GerWarPvpPlugin extends Plugin
 	{
 		panel = new GerWarPvpPanel();
 		panel.setPkTab(pkTabPanel);
+		panel.setGpBalanceTab(gpBalancePanel);
 
 		// Pull the sibling service plugins' panels and embed them as tabs.
-		// Scheduled on the EDT because sibling plugins may initialize after us.
-		SwingUtilities.invokeLater(this::attachSiblingPanels);
+		// Retry several times because sibling plugins may initialize after us.
+		scheduleSiblingAttachRetries();
 
 		BufferedImage icon = ImageUtil.loadImageResource(GerWarPvpPlugin.class, "/de/gerwar/pvp/icon.png");
 
@@ -84,31 +89,52 @@ public class GerWarPvpPlugin extends Plugin
 		eventBus.register(lootKeyListener);
 	}
 
+	private void scheduleSiblingAttachRetries()
+	{
+		// Try a few times at increasing delays; stop as soon as both panels are attached.
+		int[] delaysMs = {0, 250, 750, 2000, 5000, 10000};
+		for (int delay : delaysMs)
+		{
+			javax.swing.Timer t = new javax.swing.Timer(delay, e -> attachSiblingPanels());
+			t.setRepeats(false);
+			t.start();
+		}
+	}
+
+	private boolean fightsAttached = false;
+	private boolean splitsAttached = false;
+
 	private void attachSiblingPanels()
 	{
+		if (panel == null || (fightsAttached && splitsAttached))
+		{
+			return;
+		}
 		try
 		{
-			pluginManager.getPlugins().forEach(p ->
+			for (Plugin p : pluginManager.getPlugins())
 			{
-				if (p instanceof FightTracker)
+				if (!fightsAttached && p instanceof FightTracker)
 				{
-					FightTracker ft = (FightTracker) p;
-					FightsTabPanel fightsPanel = ft.getPanel();
+					FightsTabPanel fightsPanel = ((FightTracker) p).getPanel();
 					if (fightsPanel != null)
 					{
 						panel.setFightsTab(fightsPanel);
+						fightsAttached = true;
+						log.info("GerWarPvp: Fights panel attached");
 					}
 				}
-				else if (p instanceof SplitManager)
+				else if (!splitsAttached && p instanceof SplitManager)
 				{
-					SplitManager sm = (SplitManager) p;
-					JPanel splits = asJPanel(sm);
+					JPanel splits = asJPanel((SplitManager) p);
 					if (splits != null)
 					{
 						panel.setSplitsTab(splits);
+						splitsAttached = true;
+						log.info("GerWarPvp: Splits panel attached");
 					}
 				}
-			});
+			}
 		}
 		catch (Exception e)
 		{
@@ -149,5 +175,7 @@ public class GerWarPvpPlugin extends Plugin
 		clientToolbar.removeNavigation(navButton);
 		panel = null;
 		navButton = null;
+		fightsAttached = false;
+		splitsAttached = false;
 	}
 }

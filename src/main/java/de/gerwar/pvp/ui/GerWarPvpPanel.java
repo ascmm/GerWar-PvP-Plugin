@@ -1,5 +1,6 @@
 package de.gerwar.pvp.ui;
 
+import de.gerwar.pvp.pk.views.GpBalancePanel;
 import java.awt.BorderLayout;
 import javax.swing.BorderFactory;
 import javax.swing.JLabel;
@@ -18,17 +19,13 @@ public class GerWarPvpPanel extends PluginPanel
 		setLayout(new BorderLayout());
 		setBorder(BorderFactory.createEmptyBorder(0, 0, 0, 0));
 
-		tabs.addTab("Fights", placeholder("Fights panel — coming in M2"));
-		tabs.addTab("PK K/D", placeholder("PK K/D panel — coming in M4"));
-		tabs.addTab("Splits", placeholder("Splits panel — coming in M3"));
+		tabs.addTab("Fights", placeholder("Fights panel loading..."));
+		tabs.addTab("PK K/D", placeholder("PK K/D panel loading..."));
+		tabs.addTab("GP", placeholder("GP Balance panel loading..."));
+		tabs.addTab("Splits", placeholder("Splits panel loading..."));
 		tabs.addTab("Settings", placeholder("Open plugin settings via the side gear icon."));
 
 		add(tabs, BorderLayout.CENTER);
-	}
-
-	public JTabbedPane getTabs()
-	{
-		return tabs;
 	}
 
 	public void setFightsTab(JPanel panel)
@@ -41,9 +38,14 @@ public class GerWarPvpPanel extends PluginPanel
 		tabs.setComponentAt(1, panel);
 	}
 
-	public void setSplitsTab(JPanel panel)
+	public void setGpBalanceTab(GpBalancePanel panel)
 	{
 		tabs.setComponentAt(2, panel);
+	}
+
+	public void setSplitsTab(JPanel panel)
+	{
+		tabs.setComponentAt(3, panel);
 	}
 
 	private static JPanel placeholder(String text)
