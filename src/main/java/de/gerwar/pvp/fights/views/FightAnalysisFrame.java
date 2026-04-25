@@ -205,7 +205,7 @@ public class FightAnalysisFrame extends JFrame
 				}
 				catch (Exception ex)
 				{
-					ex.printStackTrace();
+					log.warn("Failed to read dropped fight JSON file", ex);
 				}
 			}
 		});
@@ -238,7 +238,7 @@ public class FightAnalysisFrame extends JFrame
 				}
 				catch (Exception ex)
 				{
-					ex.printStackTrace();
+					log.warn("Failed to read dropped fight JSON file", ex);
 				}
 			}
 		});
