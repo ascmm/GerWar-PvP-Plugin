@@ -1,7 +1,6 @@
 package de.gerwar.pvp.common;
 
 import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
 import java.io.IOException;
 import java.io.Reader;
@@ -13,10 +12,13 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
+import javax.inject.Inject;
+import javax.inject.Singleton;
 import net.runelite.client.RuneLite;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+@Singleton
 public class PersistenceManager
 {
 	private static final Logger log = LoggerFactory.getLogger(PersistenceManager.class);
@@ -24,9 +26,10 @@ public class PersistenceManager
 	private final Gson gson;
 	private final Path dataDir;
 
-	public PersistenceManager()
+	@Inject
+	public PersistenceManager(Gson clientGson)
 	{
-		this.gson = new GsonBuilder()
+		this.gson = clientGson.newBuilder()
 			.registerTypeAdapter(Instant.class, new InstantTypeAdapter())
 			.setPrettyPrinting()
 			.create();
